@@ -34,15 +34,19 @@
 #pragma once
 
 #include "wiced_bt_dev.h"
-#include "wiced_gki.h"
 #include "wiced_bt_cfg.h"
+#ifdef BTSTACK_VER
+#define BOOLEAN BOOL8
+#define BT_STACK_HEAP_SIZE          1024 * 6
+#else
+#include "wiced_gki.h"
 #if ( defined(CYW20706A2) || defined(CYW20719B1) || defined(CYW20719B0) || defined(CYW20721B1) || defined(CYW20735B0) || defined(CYW43012C0) )
 #include "wiced_bt_app_common.h"
 #endif
-
-
 #if !defined(CYW20819A1) && !defined(CYW20721B2) && !defined(CYW20719B2)
 #include "wiced_bt_app_hal_common.h"
+#endif
+extern const wiced_bt_cfg_buf_pool_t wiced_bt_cfg_buf_pools[];
 #endif
 
 /******************************************************************************
@@ -76,7 +80,6 @@ typedef struct
  *****************************************************************************/
 /* Stack and buffer pool configuration tables */
 extern const wiced_bt_cfg_settings_t wiced_bt_cfg_settings;
-extern const wiced_bt_cfg_buf_pool_t wiced_bt_cfg_buf_pools[];
 
 #define LE_COC_LARGE_POOL_BUFFER_COUNT            5
 #define LE_COC_VS_ID                      WICED_NVRAM_VSID_START
