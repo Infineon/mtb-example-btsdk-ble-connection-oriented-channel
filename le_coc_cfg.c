@@ -45,7 +45,7 @@
 /*****************************************************************************
  * wiced_bt core stack configuration
  ****************************************************************************/
-#if BTSTACK_VER > 0x01020000
+#if BTSTACK_VER >= 0x03000001
 /* BLE SCAN Setting */
 const wiced_bt_cfg_ble_scan_settings_t wiced_bt_cfg_scan_settings =
 {
