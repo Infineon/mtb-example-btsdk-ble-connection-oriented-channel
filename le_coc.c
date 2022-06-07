@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2021, Cypress Semiconductor Corporation (an Infineon company) or
+ * Copyright 2016-2022, Cypress Semiconductor Corporation (an Infineon company) or
  * an affiliate of Cypress Semiconductor Corporation.  All rights reserved.
  *
  * This software, including source code, documentation and related
@@ -237,7 +237,12 @@ void le_coc_send_to_client_control(uint16_t code, uint8_t* p_data, uint16_t leng
         {
             memcpy(dataPtr, p_data, length);
             if(wiced_transport_send_buffer(code, dataPtr, length) !=  WICED_SUCCESS)
+            {
                 WICED_BT_TRACE("[%s] wiced_transport_send_buffer failed 0x%x length %d \r\n", __func__, code, length);
+#if !defined(CYW20706A2)
+                wiced_transport_free_buffer(dataPtr);
+#endif
+            }
         }
     }
 #endif
