@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2022, Cypress Semiconductor Corporation (an Infineon company) or
+ * Copyright 2016-2023, Cypress Semiconductor Corporation (an Infineon company) or
  * an affiliate of Cypress Semiconductor Corporation.  All rights reserved.
  *
  * This software, including source code, documentation and related
@@ -36,7 +36,7 @@
  * LE COC Application (Server/Client)
  *
  * Features demonstrated
- *  - WICED BT LE L2CAP APIs for Connection Oriented Channels
+ *  - AIROC Bluetooth LE L2CAP APIs for Connection Oriented Channels
  *
  * Server:
  *  - Start advertisements from client control
