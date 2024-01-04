@@ -65,6 +65,7 @@
 #include "wiced_bt_ble.h"
 #include "wiced_platform.h"
 #include "le_coc.h"
+#include "wiced_timer.h"
 
 /******************************************************
  *                      Macros
@@ -82,13 +83,31 @@
  *  Variables
  ******************************************************/
 le_coc_cb_t le_coc_cb;
-uint16_t psm;
-uint16_t mtu;
+uint16_t psm = LE_COC_DEFAULT_PSM;
+uint16_t mtu = LE_COC_DEFAULT_MTU;
 #ifdef BTSTACK_VER
 wiced_bt_heap_t *p_default_heap = NULL;
 wiced_bt_db_hash_t headset_db_hash;
 #else
 wiced_transport_buffer_pool_t* rxBuffPoolPtr = NULL;
+#endif
+void le_coc_init(void);
+void le_coc_scan_result_cback(wiced_bt_ble_scan_results_t *p_scan_result, uint8_t *p_adv_data);
+uint32_t le_coc_send_data(uint8_t* p_data, uint32_t data_len);
+void le_coc_handle_le_coc_group(uint16_t cmd_opcode, uint8_t* p_data, uint32_t data_len);
+void le_coc_disconnect(void);
+#ifdef STANDALONE_MODE
+#define MAX_SIZE_TO_SEND (1*1024*1024) // 1MB
+#define APP_TIMEOUT_IN_MSEC 10
+wiced_timer_t app_timer;
+uint32_t app_timer_count = 0;
+uint32_t total_bytes_sent = 0;
+uint32_t total_bytes_recv = 0;
+static uint8_t buff[1024];
+uint32_t app_send_data(void);
+
+uint8_t pending_connect = 0;
+uint8_t test_complete = 0;
 #endif
 
 /******************************************************
@@ -144,6 +163,9 @@ const char* eventStr[] =
     STR(BTM_ENABLED_EVT),
     STR(BTM_DISABLED_EVT),
     STR(BTM_POWER_MANAGEMENT_STATUS_EVT),
+#ifdef BTSTACK_VER
+    STR(BTM_RE_START_EVT),
+#endif
     STR(BTM_PIN_REQUEST_EVT),
     STR(BTM_USER_CONFIRMATION_REQUEST_EVT),
     STR(BTM_PASSKEY_NOTIFICATION_EVT),
@@ -172,7 +194,14 @@ const char* eventStr[] =
     STR(BTM_SCO_DISCONNECTED_EVT),
     STR(BTM_SCO_CONNECTION_REQUEST_EVT),
     STR(BTM_SCO_CONNECTION_CHANGE_EVT),
-    STR(BTM_BLE_CONNECTION_PARAM_UPDATE), };
+    STR(BTM_BLE_CONNECTION_PARAM_UPDATE),
+    STR(BTM_BLE_PHY_UPDATE_EVT),
+#ifdef BTSTACK_VER
+    STR(BTM_LPM_STATE_LOW_POWER),
+    STR(BTM_MULTI_ADVERT_RESP_EVENT),
+    STR(BTM_BLE_DATA_LENGTH_UPDATE_EVENT),
+#endif
+};
 
 /****************************************************/
 const char* getStackEventStr(wiced_bt_management_evt_t event)
@@ -221,6 +250,7 @@ const char* getOpcodeStr(uint16_t opcode)
  */
 void le_coc_send_to_client_control(uint16_t code, uint8_t* p_data, uint16_t length)
 {
+#ifndef STANDALONE_MODE
     WICED_BT_TRACE("[%s] Sending 0x%x length %d \r\n", __func__, code, length);
 
 #ifdef BTSTACK_VER
@@ -246,6 +276,7 @@ void le_coc_send_to_client_control(uint16_t code, uint8_t* p_data, uint16_t leng
         }
     }
 #endif
+#endif // STANDALONE_MODE
 }
 
 /*
@@ -263,8 +294,9 @@ void le_coc_connect_ind_cback(void *context, BD_ADDR bda, UINT16 local_cid, UINT
 
     /* Accept the connection */
 #ifdef BTSTACK_VER
-    tDRB  rx_drb;
-    wiced_bt_l2cap_le_connect_rsp(bda, id, local_cid, L2CAP_CONN_OK, mtu, &rx_drb);
+    tDRB  *rx_drb;
+    rx_drb = (tDRB *)wiced_bt_get_buffer(mtu + DRB_OVERHEAD_SIZE);
+    wiced_bt_l2cap_le_connect_rsp(bda, id, local_cid, L2CAP_CONN_OK, mtu, rx_drb);
 #else
     wiced_bt_l2cap_le_connect_rsp(bda, id, local_cid, L2CAP_CONN_OK, mtu, L2CAP_DEFAULT_BLE_CB_POOL_ID);
 #endif
@@ -279,6 +311,52 @@ void le_coc_connect_ind_cback(void *context, BD_ADDR bda, UINT16 local_cid, UINT
     /* Indicate to client control */
     le_coc_send_to_client_control(HCI_CONTROL_LE_COC_EVENT_CONNECTED, le_coc_cb.peer_bda, BD_ADDR_LEN);
 }
+#ifdef STANDALONE_MODE
+void test_ended(void)
+{
+    uint32_t bps;
+    uint32_t elapsed_time = app_timer_count * APP_TIMEOUT_IN_MSEC;
+    if (test_complete)
+        return;
+    wiced_stop_timer(&app_timer);
+
+    test_complete = 1;
+    if (elapsed_time == 0)
+    {
+        WICED_BT_TRACE("elapsed_time ZERO \n");
+        return;
+    }
+#if defined(STANDALONE_MODE) && (STANDALONE_MODE == STANDALONE_MODE_PERIPHERAL)
+    bps = (total_bytes_recv*100)/elapsed_time;
+    bps = (bps * 80)/1024;
+    WICED_BT_TRACE ("[%s] Bytes sent: %d  Rcvd: %d time %d msec Kbps: %u",__FUNCTION__, total_bytes_sent, total_bytes_recv, elapsed_time, bps);
+    le_coc_disconnect();
+#else
+    bps = (total_bytes_sent *100)/elapsed_time;
+    bps = (bps * 80)/1024;
+    WICED_BT_TRACE ("[%s] Bytes sent: %d  Rcvd: %d time %d msec Kbps: %u",__FUNCTION__, total_bytes_sent, total_bytes_recv, elapsed_time, bps);
+#endif
+}
+uint32_t app_send_data(void)
+{
+    uint32_t result;
+
+    result = le_coc_send_data(buff, le_coc_cb.peer_mtu);
+    if (result == L2CAP_DATAWRITE_SUCCESS)
+    {
+        total_bytes_sent += le_coc_cb.peer_mtu;
+    }
+    if (total_bytes_sent >= MAX_SIZE_TO_SEND)
+    {
+        test_ended();
+    }
+    return result;
+}
+void app_timer_cb(uint32_t data)
+{
+    app_timer_count++;
+}
+#endif // STANDALONE_MODE
 
 /*
  * L2CAP connect confirm callback
@@ -296,6 +374,13 @@ void le_coc_connect_cfm_cback(void *context, UINT16 local_cid, UINT16 result, UI
         /* Store peer info for reference*/
         le_coc_cb.local_cid = local_cid;
         le_coc_cb.peer_mtu = mtu_peer;
+#if defined(STANDALONE_MODE) && (STANDALONE_MODE == STANDALONE_MODE_CENTRAL)
+        {
+            uint8_t enable = 1;
+            pending_connect = 0;
+            le_coc_handle_le_coc_group(HCI_CONTROL_LE_COC_COMMAND_ENABLE_LE2M, &enable, sizeof(uint8_t));
+        }
+#endif
     }
     else
     {
@@ -375,16 +460,32 @@ void le_coc_disconnect_cfm_cback(void *context, UINT16 local_cid, UINT16 result)
 #ifdef BTSTACK_VER
 void le_coc_data_cback(UINT16 local_cid, tDRB *p_drb)
 {
+#ifndef STANDALONE_MODE
     WICED_BT_TRACE("[%s] received %d bytes\r\n", __func__, p_drb->drb_data_len);
-
+#endif
+#if defined(STANDALONE_MODE) && (STANDALONE_MODE == STANDALONE_MODE_PERIPHERAL)
+    total_bytes_recv += p_drb->drb_data_len;
+    if (total_bytes_recv >= MAX_SIZE_TO_SEND)
+    {
+        test_ended();
+    }
+#endif
     /* send the received data to the client control */
     le_coc_send_to_client_control(HCI_CONTROL_LE_COC_EVENT_RX_DATA, p_drb->drb_data, p_drb->drb_data_len);
 }
 #else
 void le_coc_data_cback(void *context, UINT16 local_cid, UINT8 *p_data, UINT16 len)
 {
+#ifndef STANDALONE_MODE
     WICED_BT_TRACE("[%s] received %d bytes\r\n", __func__, len);
-
+#endif
+#if defined(STANDALONE_MODE) && (STANDALONE_MODE == STANDALONE_MODE_PERIPHERAL)
+    total_bytes_recv += len;
+    if (total_bytes_recv >= MAX_SIZE_TO_SEND)
+    {
+        test_ended();
+    }
+#endif
     /* send the received data to the client control */
     le_coc_send_to_client_control(HCI_CONTROL_LE_COC_EVENT_RX_DATA, p_data, len);
 }
@@ -397,16 +498,25 @@ void le_coc_data_cback(void *context, UINT16 local_cid, UINT8 *p_data, UINT16 le
 void le_coc_tx_complete_cback(uint16_t local_cid, void *p_data)
 {
     uint8_t status;
-
+#ifndef STANDALONE_MODE
     WICED_BT_TRACE("[%s] CID %d \r\n", __func__, local_cid);
+#endif
+    wiced_bt_free_buffer(p_data);
+#if defined(STANDALONE_MODE) && (STANDALONE_MODE == STANDALONE_MODE_CENTRAL)
+    app_send_data();
+#endif
     le_coc_send_to_client_control(HCI_CONTROL_LE_COC_EVENT_TX_COMPLETE, &status, 1);
 }
 #else
 void le_coc_tx_complete_cback(void *context, uint16_t local_cid, uint16_t bufcount)
 {
     uint8_t status;
-
+#ifndef STANDALONE_MODE
     WICED_BT_TRACE("[%s] CID %d bufcount %d\r\n", __func__, local_cid, bufcount);
+#endif
+#if defined(STANDALONE_MODE) && (STANDALONE_MODE == STANDALONE_MODE_CENTRAL)
+    app_send_data();
+#endif
     le_coc_send_to_client_control(HCI_CONTROL_LE_COC_EVENT_TX_COMPLETE, &status, 1);
 }
 #endif
@@ -417,6 +527,8 @@ void le_coc_tx_complete_cback(void *context, uint16_t local_cid, uint16_t bufcou
  */
 static void le_coc_drb_release_cback(tDRB * pDRB)
 {
+    WICED_BT_TRACE ("[%s]  freeing drb : 0x%08x", __func__, pDRB);
+    wiced_bt_free_buffer (pDRB);
 }
 #else
 /*
@@ -514,7 +626,6 @@ void le_coc_set_advertisement_data(void)
 wiced_bt_dev_status_t le_coc_management_callback(wiced_bt_management_evt_t event, wiced_bt_management_evt_data_t *p_event_data)
 {
     wiced_bt_dev_status_t status = WICED_BT_SUCCESS;
-    wiced_bt_device_address_t bda;
     uint8_t *p_keys;
 
     WICED_BT_TRACE("[%s] Received %s event from stack \r\n", __func__, getStackEventStr(event));
@@ -524,8 +635,9 @@ wiced_bt_dev_status_t le_coc_management_callback(wiced_bt_management_evt_t event
         case BTM_ENABLED_EVT:
 
             /* Register callback for receiving hci traces */
+#ifndef STANDALONE_MODE
             wiced_bt_dev_register_hci_trace(le_coc_hci_trace_cback);
-
+#endif
             /* Allow peer to pair */
             wiced_bt_set_pairable_mode(WICED_TRUE, 0);
 
@@ -534,7 +646,16 @@ wiced_bt_dev_status_t le_coc_management_callback(wiced_bt_management_evt_t event
 
             /* Set advertisement data */
             le_coc_set_advertisement_data();
-
+#if defined(STANDALONE_MODE)
+#if (STANDALONE_MODE == STANDALONE_MODE_PERIPHERAL)
+            wiced_bt_start_advertisements(BTM_BLE_ADVERT_UNDIRECTED_HIGH, 0, NULL);
+#endif
+#if (STANDALONE_MODE == STANDALONE_MODE_CENTRAL)
+            wiced_bt_ble_scan(BTM_BLE_SCAN_TYPE_HIGH_DUTY, 0, le_coc_scan_result_cback);
+#endif
+            wiced_init_timer(&app_timer, app_timer_cb, 0, WICED_MILLI_SECONDS_PERIODIC_TIMER);
+            le_coc_init();
+#endif // STANDALONE_MODE
             break;
 
         case BTM_SECURITY_REQUEST_EVT:
@@ -551,6 +672,10 @@ wiced_bt_dev_status_t le_coc_management_callback(wiced_bt_management_evt_t event
 
         case BTM_BLE_ADVERT_STATE_CHANGED_EVT:
             WICED_BT_TRACE("[%s] Adv %s \r\n", __func__, (BTM_BLE_ADVERT_OFF != p_event_data->ble_advert_state_changed) ? "started" : "stopped");
+#if defined(STANDALONE_MODE) && (STANDALONE_MODE == STANDALONE_MODE_PERIPHERAL)
+            if ( (p_event_data->ble_advert_state_changed == BTM_BLE_ADVERT_OFF) && (le_coc_cb.local_cid == 0xFFFF) )
+                wiced_bt_start_advertisements(BTM_BLE_ADVERT_UNDIRECTED_HIGH, 0, NULL);
+#endif
             le_coc_send_to_client_control(HCI_CONTROL_LE_COC_EVENT_ADV_STS, &p_event_data->ble_advert_state_changed, 1);
             break;
 
@@ -580,8 +705,25 @@ wiced_bt_dev_status_t le_coc_management_callback(wiced_bt_management_evt_t event
 
         case BTM_BLE_SCAN_STATE_CHANGED_EVT:
             WICED_BT_TRACE("[%s] Scan %s \r\n", __func__, (BTM_BLE_SCAN_TYPE_NONE != p_event_data->ble_scan_state_changed) ? "started" : "stopped");
+#if defined(STANDALONE_MODE) && (STANDALONE_MODE == STANDALONE_MODE_CENTRAL)
+            if (!pending_connect && (p_event_data->ble_scan_state_changed == BTM_BLE_SCAN_TYPE_NONE) && (le_coc_cb.local_cid == 0xFFFF) )
+                wiced_bt_ble_scan(BTM_BLE_SCAN_TYPE_HIGH_DUTY, 0, le_coc_scan_result_cback);
+#endif
             break;
-
+        case BTM_BLE_PHY_UPDATE_EVT:
+#ifdef STANDALONE_MODE
+            wiced_start_timer(&app_timer, APP_TIMEOUT_IN_MSEC);
+#if (STANDALONE_MODE == STANDALONE_MODE_CENTRAL)
+            {
+                uint32_t result = L2CAP_DATAWRITE_SUCCESS;
+                while(result == L2CAP_DATAWRITE_SUCCESS)
+                {
+                    result = app_send_data();
+                }
+            }
+#endif
+#endif
+            break;
         default:
             WICED_BT_TRACE("[%s] received event (%s) not processed \r\n", __func__, getStackEventStr(event));
             break;
@@ -624,13 +766,26 @@ uint32_t le_coc_send_data(uint8_t* p_data, uint32_t data_len)
 {
     uint8_t ret_val = 0;
 
-    //TODO: Check if the received data_len is larger that the peer MTU
 #ifdef BTSTACK_VER
-    ret_val = wiced_bt_l2cap_le_data_write(le_coc_cb.local_cid, p_data, data_len);
+    {
+        uint8_t *p = NULL;
+        if (data_len > mtu)
+            data_len = mtu;
+         p = wiced_bt_get_buffer(data_len);
+         if (!p)
+         {
+             WICED_BT_TRACE("Allocation failed \n");
+             return L2CAP_DATAWRITE_CONGESTED;
+         }
+         WICED_MEMCPY(p, p_data, data_len);
+         ret_val = wiced_bt_l2cap_le_data_write(le_coc_cb.local_cid, p, data_len);
+    }
 #else
     ret_val = wiced_bt_l2cap_le_data_write(le_coc_cb.local_cid, p_data, data_len, 0);
 #endif
+#ifndef STANDALONE_MODE
     WICED_BT_TRACE("[%s] ret_val : %d data_len : %d\r\n", __func__, ret_val, data_len);
+#endif // STANDALONE_MODE
 
     return ret_val;
 }
@@ -643,13 +798,15 @@ void le_coc_connect(wiced_bt_device_address_t bd_addr, wiced_bt_ble_address_type
     uint8_t req_security = 0;
     uint8_t req_encr_key_size = 0;
     uint8_t *p_data = le_coc_cb.peer_bda;
-
+    uint16_t lcid=0;
+    WICED_BT_TRACE("[%s] BDA %B \n",__FUNCTION__,bd_addr);
     /* Initiate the connection L2CAP connection */
 #ifdef BTSTACK_VER
     /* to do, need to allocate rx DRB for receiving buffer */
-    tDRB * p_rx_drb = NULL;
-    wiced_bt_l2cap_le_connect_req(psm, (uint8_t*) bd_addr, bd_addr_type, BLE_CONN_MODE_HIGH_DUTY, mtu,
-                                  req_security, req_encr_key_size, p_rx_drb );
+    tDRB *p_drb = (tDRB *)wiced_bt_get_buffer(mtu + DRB_OVERHEAD_SIZE);
+    lcid = wiced_bt_l2cap_le_connect_req(psm, (uint8_t*) bd_addr, bd_addr_type, BLE_CONN_MODE_HIGH_DUTY, mtu,
+                                  req_security, req_encr_key_size, p_drb );
+    WICED_BT_TRACE("LCID %d \n",lcid);
 #else
     wiced_bt_l2cap_le_connect_req(psm, (uint8_t*) bd_addr, bd_addr_type, BLE_CONN_MODE_HIGH_DUTY, mtu,
                                   L2CAP_DEFAULT_BLE_CB_POOL_ID, req_security, req_encr_key_size);
@@ -667,7 +824,27 @@ void le_coc_scan_result_cback(wiced_bt_ble_scan_results_t *p_scan_result, uint8_
 
     if (p_scan_result)
     {
-
+#if defined(STANDALONE_MODE) && (STANDALONE_MODE == STANDALONE_MODE_CENTRAL)
+       {
+            uint8_t length=0;
+            uint8_t *p_data;
+            p_data = wiced_bt_ble_check_advertising_data(p_adv_data, BTM_BLE_ADVERT_TYPE_NAME_SHORT, &length);
+            if (p_data == NULL || length == 0)
+                return;
+            WICED_BT_TRACE("[%s] Device : %s %B (Type : %d) \n",
+                                   __FUNCTION__,
+                                   p_data,
+                                   p_scan_result->remote_bd_addr,
+                                   p_scan_result->ble_addr_type);
+            if (memcmp(p_data, wiced_bt_cfg_settings.device_name, length) != 0)
+                return;
+            WICED_BT_TRACE(" Found Device : %B \n", p_scan_result->remote_bd_addr);
+            wiced_bt_ble_scan(BTM_BLE_SCAN_TYPE_NONE, 0, NULL);
+            pending_connect = 1;
+            le_coc_connect(p_scan_result->remote_bd_addr, p_scan_result->ble_addr_type);
+            return;
+        }
+#endif
         *p++ = p_scan_result->ble_evt_type;
         *p++ = p_scan_result->ble_addr_type;
 
@@ -875,6 +1052,8 @@ uint32_t le_coc_proc_rx_cmd(uint8_t *p_data, uint32_t length)
 
 #ifndef BTSTACK_VER
     wiced_transport_free_buffer(p_data_copy);
+#else
+    UNUSED_VARIABLE(p_data_copy);
 #endif
     return 0;
 }

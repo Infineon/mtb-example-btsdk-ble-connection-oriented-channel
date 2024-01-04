@@ -37,7 +37,7 @@
 #include "wiced_bt_cfg.h"
 #ifdef BTSTACK_VER
 #define BOOLEAN BOOL8
-#define BT_STACK_HEAP_SIZE          1024 * 6
+#define BT_STACK_HEAP_SIZE          1024 * 12
 #else
 #include "wiced_gki.h"
 #if ( defined(CYW20706A2) || defined(CYW20719B1) || defined(CYW20721B1) || defined(CYW43012C0) )
@@ -86,6 +86,10 @@ extern const wiced_bt_cfg_settings_t wiced_bt_cfg_settings;
 #define LE_COC_LOCAL_KEYS_VS_ID          ( WICED_NVRAM_VSID_START + 1 )
 #define LE_COC_PAIRED_KEYS_VS_ID          ( WICED_NVRAM_VSID_START + 2 )
 
+#define STANDALONE_MODE_CENTRAL      0
+#define STANDALONE_MODE_PERIPHERAL   1
+#define LE_COC_DEFAULT_PSM 19
+#define LE_COC_DEFAULT_MTU 512
 /*****************************************************************************
  * Function Prototypes
  *****************************************************************************/

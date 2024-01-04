@@ -52,6 +52,8 @@ SUPPORTED_TARGETS = \
   CYW920820EVB-02 \
   CYBT-213043-EVAL \
   CYBT-243053-EVAL \
+  Vela-IF820-INT-ANT-DVK \
+  Vela-IF820-EXT-ANT-DVK \
   CYBT-253059-EVAL \
   CYBT-223058-EVAL \
   CYBT-273063-EVAL \
@@ -105,7 +107,15 @@ endif
 CY_APP_DEFINES+=\
     -DWICED_BT_TRACE_ENABLE
 
+# Settings for standalone mode operation without Client Control (see README.md)
 #
+# Enable either one of the following lines for standalone mode:
+# as central:
+# CY_APP_DEFINES += -DSTANDALONE_MODE=STANDALONE_MODE_CENTRAL
+# or as peripheral:
+# CY_APP_DEFINES += -DSTANDALONE_MODE=STANDALONE_MODE_PERIPHERAL
+
+
 # Components (middleware libraries)
 #
 COMPONENTS +=bsp_design_modus

@@ -118,7 +118,7 @@ const wiced_bt_cfg_l2cap_application_t wiced_bt_cfg_l2cap_app = /* Application m
     .max_app_l2cap_br_edr_ertm_tx_win   = 0,    /**< Maximum ERTM TX Window allowed */
 
     /* LE L2cap connection-oriented channels configuration */
-    .max_app_l2cap_le_fixed_channels    = 0,
+    .max_app_l2cap_le_fixed_channels    = 1,
 };
 
 /* BR Setting */
@@ -159,7 +159,7 @@ const wiced_bt_cfg_isoc_t wiced_bt_cfg_isoc =
 const wiced_bt_cfg_ble_t wiced_bt_cfg_ble =
 {
     .ble_max_simultaneous_links = 3,
-    .ble_max_rx_pdu_size = 256,
+    .ble_max_rx_pdu_size = 517,
     .appearance = APPEARANCE_GENERIC_TAG,    /**< GATT appearance (see gatt_appearance_e) */
     .rpa_refresh_timeout = WICED_BT_CFG_DEFAULT_RANDOM_ADDRESS_NEVER_CHANGE,   /**< Interval of  random address refreshing - secs */
     .host_addr_resolution_db_size = 5, /**< LE Address Resolution DB settings - effective only for pre 4.2 controller*/
